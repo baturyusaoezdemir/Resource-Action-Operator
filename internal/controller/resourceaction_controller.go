@@ -31,6 +31,10 @@ type ResourceActionReconciler struct {
 // +kubebuilder:rbac:groups=ops.yusaozdemir.de,resources=resourceactions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ops.yusaozdemir.de,resources=resourceactions/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
 func (r *ResourceActionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
