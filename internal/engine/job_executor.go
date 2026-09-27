@@ -387,7 +387,7 @@ func (e *JobExecutor) updateJobExecutionRecord(
 			return e.k8s.Status().Update(ctx, &latest)
 		}
 
-		latest.Status.Executions = append(latest.Status.Executions, opsv1alpha1.ExecutionRecord{
+		appendExecutionRecord(&latest, opsv1alpha1.ExecutionRecord{
 			ResourceUID: string(input.Obj.GetUID()),
 			Event:       string(input.Event),
 			ExecutedAt:  metav1.Now(),

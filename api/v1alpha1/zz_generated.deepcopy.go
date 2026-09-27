@@ -462,6 +462,11 @@ func (in *ResourceActionStatus) DeepCopyInto(out *ResourceActionStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.HandledCreateUIDs != nil {
+		in, out := &in.HandledCreateUIDs, &out.HandledCreateUIDs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

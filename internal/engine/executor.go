@@ -59,6 +59,11 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 		if !matchesSelector(ra.Spec.Selector, input.GVK) {
 			continue
 		}
+		if input.Event == EventDelete && createHandled(&ra, string(input.Obj.GetUID())) {
+			if err := e.forgetDeletedResource(ctx, ra, input.Obj.GetUID()); err != nil {
+				logger.Error(err, "failed to forget deleted resource", "resourceAction", ra.Name)
+			}
+		}
 		if !containsEvent(ra.Spec.Events, string(input.Event)) {
 			continue
 		}
@@ -138,7 +143,7 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 				return err
 			}
 
-			latest.Status.Executions = append(latest.Status.Executions, execRecord)
+			appendExecutionRecord(&latest, execRecord)
 			setExecutionResult(&latest, execErr)
 
 			return e.Client.Status().Update(ctx, &latest)
@@ -360,25 +365,34 @@ func (e *K8sExecutor) resolveHeaders(
 }
 
 // alreadyExecuted reports whether the ResourceAction already ran for this
-// resource and event. Create and Delete happen once per resource (UID), so
-// they are deduplicated; this keeps informer re-lists after an operator
-// restart from firing Create actions again for existing resources. Update
-// events are never deduplicated: every real change (e.g. a label transition
-// that happens again) must trigger the action.
+// resource and event. Only Create is deduplicated: the informer re-lists all
+// existing resources as Create after an operator restart, which must not run
+// the actions again. Deleted resources are never re-listed, and every real
+// Update (e.g. a label transition that happens again) must run the action.
 func alreadyExecuted(
 	ra *opsv1alpha1.ResourceAction,
 	uid types.UID,
 	event string,
 ) bool {
-	if event == string(EventUpdate) {
+	if event != string(EventCreate) {
 		return false
 	}
-	for _, exec := range ra.Status.Executions {
-		if exec.ResourceUID == string(uid) && exec.Event == event {
-			return true
+	return createHandled(ra, string(uid))
+}
+
+// forgetDeletedResource drops the Create dedup state of a deleted resource so
+// HandledCreateUIDs only tracks resources that still exist.
+func (e *K8sExecutor) forgetDeletedResource(ctx context.Context, ra opsv1alpha1.ResourceAction, uid types.UID) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest opsv1alpha1.ResourceAction
+		if err := e.Client.Get(ctx, client.ObjectKeyFromObject(&ra), &latest); err != nil {
+			return client.IgnoreNotFound(err)
 		}
-	}
-	return false
+		if !forgetResource(&latest, string(uid)) {
+			return nil
+		}
+		return e.Client.Status().Update(ctx, &latest)
+	})
 }
 
 func matchesSelector(sel opsv1alpha1.ResourceSelector, gvk schema.GroupVersionKind) bool {

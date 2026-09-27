@@ -383,6 +383,9 @@ spec:
                   type: object
                 type: array
               executions:
+                description: |-
+                  Executions holds the most recent execution records. Older records are
+                  dropped so the status stays small.
                 items:
                   properties:
                     actionCount:
@@ -439,6 +442,14 @@ spec:
                   - executedAt
                   - resourceUID
                   type: object
+                type: array
+              handledCreateUIDs:
+                description: |-
+                  HandledCreateUIDs lists the UIDs of resources whose Create event was
+                  already handled, so Create actions do not run again when the operator
+                  restarts. UIDs are removed when the resource is deleted.
+                items:
+                  type: string
                 type: array
               lastError:
                 type: string

@@ -214,9 +214,15 @@ type SecretKeyRef struct {
 }
 
 type ResourceActionStatus struct {
-	Executions []ExecutionRecord  `json:"executions,omitempty"`
-	LastError  string             `json:"lastError,omitempty"`
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// Executions holds the most recent execution records. Older records are
+	// dropped so the status stays small.
+	Executions []ExecutionRecord `json:"executions,omitempty"`
+	// HandledCreateUIDs lists the UIDs of resources whose Create event was
+	// already handled, so Create actions do not run again when the operator
+	// restarts. UIDs are removed when the resource is deleted.
+	HandledCreateUIDs []string           `json:"handledCreateUIDs,omitempty"`
+	LastError         string             `json:"lastError,omitempty"`
+	Conditions        []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
