@@ -44,6 +44,7 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 		return err
 	}
 
+	var errs []error
 	for _, ra := range list.Items {
 		var execErr error
 		executedAny := false
@@ -151,7 +152,8 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 
 		if err != nil {
 			logger.Error(err, "failed to update status", "resourceAction", ra.Name)
-			return err
+			errs = append(errs, fmt.Errorf("resourceaction %s/%s: update status: %w", ra.Namespace, ra.Name, err))
+			continue
 		}
 
 		if execErr != nil && executedActions > 0 {
@@ -165,7 +167,10 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 				LastHTTPStatus:    lastHTTPStatus,
 			})
 			e.emitEvent(&ra, corev1.EventTypeWarning, "ActionFailed", execRecord, execErr)
-			return execErr
+			// Keep going: a failing ResourceAction must not skip the other
+			// ResourceActions that match this event.
+			errs = append(errs, fmt.Errorf("resourceaction %s/%s: %w", ra.Namespace, ra.Name, execErr))
+			continue
 		}
 
 		if totalAttempts > 0 || lastHTTPStatus > 0 || totalDurationMillis > 0 {
@@ -182,7 +187,7 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 		e.emitEvent(&ra, corev1.EventTypeNormal, "ActionSucceeded", execRecord, nil)
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // ExecuteScheduledAction runs a single cron/schedule action of a ResourceAction.

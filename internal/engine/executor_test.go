@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -482,5 +483,48 @@ func TestExecute_CreateEvent_RunsOncePerResource(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("expected 1 HTTP call for repeated Create, got %d", got)
+	}
+}
+
+func TestExecute_FailingResourceActionDoesNotSkipOthers(t *testing.T) {
+	var calls atomic.Int32
+	okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer okSrv.Close()
+	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer failSrv.Close()
+
+	// The fake client lists ResourceActions sorted by name, so the failing
+	// one ("ra-a-fails") runs first.
+	failing := newLabelChangeHTTPResourceAction(failSrv.URL)
+	failing.Name = "ra-a-fails"
+	failing.Spec.Filters = nil
+	succeeding := newLabelChangeHTTPResourceAction(okSrv.URL)
+	succeeding.Name = "ra-b-succeeds"
+	succeeding.Spec.Filters = nil
+	exec, cl := newTestExecutor(t, failing, succeeding)
+
+	input := newNodeUpdateInput("uid-node-1", "node-a", nil, nil)
+	input.Event = EventCreate
+	input.OldObj = nil
+
+	err := exec.Execute(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "ra-a-fails") {
+		t.Fatalf("expected error naming the failing ResourceAction, got %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected the second ResourceAction to still run, got %d calls", got)
+	}
+
+	var got opsv1alpha1.ResourceAction
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(succeeding), &got); err != nil {
+		t.Fatalf("get resourceaction: %v", err)
+	}
+	if len(got.Status.Executions) != 1 {
+		t.Fatalf("expected an execution record on the succeeding ResourceAction, got %d", len(got.Status.Executions))
 	}
 }
