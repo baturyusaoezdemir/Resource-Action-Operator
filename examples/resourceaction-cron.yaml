@@ -12,7 +12,7 @@ spec:
   actions:
     - type: http
       mode: cron
-      schedule: "*/2 * * * *"
+      schedule: "2m"
       method: POST
       url: https://httpbin.org/post
 ---

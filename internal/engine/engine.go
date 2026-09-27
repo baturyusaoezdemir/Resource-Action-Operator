@@ -83,7 +83,7 @@ func New(cfg *rest.Config, executor Executor) (*Engine, error) {
 		return nil, fmt.Errorf("executor must be *K8sExecutor")
 	}
 
-	cron := NewCronEngine(k8sExec.Client, executor)
+	cron := NewCronEngine(k8sExec.Client, k8sExec)
 
 	return &Engine{
 		cfg:        cfg,

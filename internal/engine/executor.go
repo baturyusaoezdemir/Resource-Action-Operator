@@ -2,12 +2,14 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	opsv1alpha1 "de.yusaozdemir.resource-action-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+var errScheduledActionGone = errors.New("scheduled action no longer exists")
 
 type K8sExecutor struct {
 	Client    client.Client
@@ -74,7 +78,7 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 		jobExec := NewJobExecutor(e.Client, e.Clientset)
 
 		for i, action := range ra.Spec.Actions {
-			if action.Mode == "cron" || action.Mode == "schedule" {
+			if isScheduledMode(action.Mode) {
 				continue
 			}
 			executedAny = true
@@ -135,24 +139,7 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 			}
 
 			latest.Status.Executions = append(latest.Status.Executions, execRecord)
-
-			if execErr != nil {
-				latest.Status.LastError = execErr.Error()
-				setCondition(&latest, metav1.Condition{
-					Type:    "Ready",
-					Status:  metav1.ConditionFalse,
-					Reason:  "ActionFailed",
-					Message: execErr.Error(),
-				})
-			} else {
-				latest.Status.LastError = ""
-				setCondition(&latest, metav1.Condition{
-					Type:    "Ready",
-					Status:  metav1.ConditionTrue,
-					Reason:  "ActionSucceeded",
-					Message: "All actions executed successfully",
-				})
-			}
+			setExecutionResult(&latest, execErr)
 
 			return e.Client.Status().Update(ctx, &latest)
 		})
@@ -191,6 +178,101 @@ func (e *K8sExecutor) Execute(ctx context.Context, input MatchInput) error {
 	}
 
 	return nil
+}
+
+// ExecuteScheduledAction runs a single cron/schedule action of a ResourceAction.
+// It re-reads the ResourceAction so that spec changes are honored, and returns
+// errScheduledActionGone when the ResourceAction or the scheduled action no longer exists.
+func (e *K8sExecutor) ExecuteScheduledAction(
+	ctx context.Context,
+	key client.ObjectKey,
+	actionIndex int,
+	input MatchInput,
+) error {
+	var ra opsv1alpha1.ResourceAction
+	if err := e.Client.Get(ctx, key, &ra); err != nil {
+		if apierrors.IsNotFound(err) {
+			return errScheduledActionGone
+		}
+		return err
+	}
+	if actionIndex >= len(ra.Spec.Actions) || !isScheduledMode(ra.Spec.Actions[actionIndex].Mode) {
+		return errScheduledActionGone
+	}
+	action := ra.Spec.Actions[actionIndex]
+
+	actionMetrics, execErr := e.executeAction(ctx, ra, actionIndex, action, input,
+		NewHTTPExecutor(e.Client), NewJobExecutor(e.Client, e.Clientset))
+
+	execRecord := opsv1alpha1.ExecutionRecord{
+		ResourceUID:       string(input.Obj.GetUID()),
+		Event:             string(input.Event),
+		ExecutedAt:        metav1.Now(),
+		ActionCount:       1,
+		Attempts:          actionMetrics.Attempts,
+		RetryCount:        actionMetrics.NetworkRetryCount + actionMetrics.StatusRetryCount,
+		NetworkRetryCount: actionMetrics.NetworkRetryCount,
+		StatusRetryCount:  actionMetrics.StatusRetryCount,
+		BackoffMillis:     actionMetrics.BackoffMillis,
+		DurationMillis:    actionMetrics.DurationMillis,
+		LastHTTPStatus:    actionMetrics.StatusCode,
+	}
+
+	// Scheduled runs only update conditions; they are not appended to
+	// status.executions, which would otherwise grow with every tick.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest opsv1alpha1.ResourceAction
+		if err := e.Client.Get(ctx, key, &latest); err != nil {
+			return err
+		}
+		setExecutionResult(&latest, execErr)
+		return e.Client.Status().Update(ctx, &latest)
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to update status", "resourceAction", ra.Name)
+	}
+
+	result, eventType, reason := "success", corev1.EventTypeNormal, "ScheduledActionSucceeded"
+	if execErr != nil {
+		result, eventType, reason = "failure", corev1.EventTypeWarning, "ScheduledActionFailed"
+	}
+	if action.Type == "http" {
+		observeHTTPExecution(result, HTTPExecutionRecordMetrics{
+			ActionCount:       1,
+			Attempts:          execRecord.Attempts,
+			NetworkRetryCount: execRecord.NetworkRetryCount,
+			StatusRetryCount:  execRecord.StatusRetryCount,
+			BackoffMillis:     execRecord.BackoffMillis,
+			DurationMillis:    execRecord.DurationMillis,
+			LastHTTPStatus:    execRecord.LastHTTPStatus,
+		})
+	}
+	e.emitEvent(&ra, eventType, reason, execRecord, execErr)
+
+	return execErr
+}
+
+func setExecutionResult(ra *opsv1alpha1.ResourceAction, execErr error) {
+	if execErr != nil {
+		ra.Status.LastError = execErr.Error()
+		setCondition(ra, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "ActionFailed",
+			Message: execErr.Error(),
+		})
+		return
+	}
+	ra.Status.LastError = ""
+	setCondition(ra, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "ActionSucceeded",
+		Message: "All actions executed successfully",
+	})
+}
+
+func isScheduledMode(mode string) bool {
+	return mode == "cron" || mode == "schedule"
 }
 
 func (e *K8sExecutor) executeAction(

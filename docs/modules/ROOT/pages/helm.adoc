@@ -349,7 +349,7 @@ Defaults file: link:../../../../../charts/resource-action/values.yaml[charts/res
 | `action.schedule`
 | string
 | `""`
-| Schedule interval used when `action.mode=cron`.
+| Schedule interval used when `action.mode=cron`, as a Go duration such as `30s` or `5m` (cron expressions are not supported).
 
 | `http.method`
 | string
@@ -569,7 +569,7 @@ Defaults file: link:../../../../../charts/resource-action-job/values.yaml[charts
 | `job.schedule`
 | string
 | `""`
-| Schedule interval used when `job.mode=cron`.
+| Schedule interval used when `job.mode=cron`, as a Go duration such as `30s` or `5m` (cron expressions are not supported).
 
 | `job.image.registry`
 | string

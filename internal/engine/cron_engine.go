@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -12,22 +13,28 @@ import (
 )
 
 type cronKey struct {
+	Namespace      string
 	ResourceAction string
 	ResourceUID    types.UID
 	ActionIndex    int
 	Event          EventType
 }
 
+// ScheduledActionExecutor runs a single cron/schedule action of a ResourceAction.
+type ScheduledActionExecutor interface {
+	ExecuteScheduledAction(ctx context.Context, key client.ObjectKey, actionIndex int, input MatchInput) error
+}
+
 type CronEngine struct {
 	client   client.Client
-	executor Executor
+	executor ScheduledActionExecutor
 
 	mu      sync.Mutex
 	jobs    map[cronKey]context.CancelFunc
 	started bool
 }
 
-func NewCronEngine(c client.Client, exec Executor) *CronEngine {
+func NewCronEngine(c client.Client, exec ScheduledActionExecutor) *CronEngine {
 	return &CronEngine{
 		client:   c,
 		executor: exec,
@@ -69,7 +76,7 @@ func (c *CronEngine) EnsureForMatch(ctx context.Context, input MatchInput) error
 		}
 
 		for i, action := range ra.Spec.Actions {
-			if action.Mode != "cron" && action.Mode != "schedule" {
+			if !isScheduledMode(action.Mode) {
 				continue
 			}
 			if action.Schedule == "" {
@@ -77,6 +84,7 @@ func (c *CronEngine) EnsureForMatch(ctx context.Context, input MatchInput) error
 			}
 
 			key := cronKey{
+				Namespace:      ra.Namespace,
 				ResourceAction: ra.Name,
 				ResourceUID:    input.Obj.GetUID(),
 				ActionIndex:    i,
@@ -99,7 +107,7 @@ func (c *CronEngine) EnsureForMatch(ctx context.Context, input MatchInput) error
 				"name", input.Obj.GetName(),
 			)
 
-			go c.runCron(jobCtx, ra, action, input)
+			go c.runCron(jobCtx, key, ra, i, action, input)
 		}
 	}
 
@@ -108,11 +116,14 @@ func (c *CronEngine) EnsureForMatch(ctx context.Context, input MatchInput) error
 
 func (c *CronEngine) runCron(
 	ctx context.Context,
+	key cronKey,
 	ra opsv1alpha1.ResourceAction,
+	actionIndex int,
 	action opsv1alpha1.ActionSpec,
 	input MatchInput,
 ) {
 	logger := log.FromContext(ctx)
+	defer c.forget(key)
 
 	dur, err := time.ParseDuration(action.Schedule)
 	if err != nil {
@@ -123,6 +134,7 @@ func (c *CronEngine) runCron(
 	ticker := time.NewTicker(dur)
 	defer ticker.Stop()
 
+	raKey := client.ObjectKey{Name: ra.Name, Namespace: ra.Namespace}
 	for {
 		select {
 		case <-ctx.Done():
@@ -133,26 +145,28 @@ func (c *CronEngine) runCron(
 			return
 
 		case <-ticker.C:
-			// Verify the ResourceAction still exists.
-			if input.Event != EventDelete {
-				exists := &opsv1alpha1.ResourceAction{}
-				err := c.client.Get(context.Background(), client.ObjectKey{
-					Name:      ra.Name,
-					Namespace: ra.Namespace,
-				}, exists)
-				if err != nil {
-					logger.Info("Stopping cron, ResourceAction gone",
-						"resourceAction", ra.Name)
-					return
-				}
-			}
-
 			logger.Info("Executing cron action",
 				"resourceAction", ra.Name,
+				"actionIndex", actionIndex,
 				"name", input.Obj.GetName(),
 			)
 
-			_ = c.executor.Execute(context.Background(), input)
+			err := c.executor.ExecuteScheduledAction(ctx, raKey, actionIndex, input)
+			if errors.Is(err, errScheduledActionGone) {
+				logger.Info("Stopping cron, ResourceAction or action gone",
+					"resourceAction", ra.Name, "actionIndex", actionIndex)
+				return
+			}
+			if err != nil {
+				logger.Error(err, "cron action failed",
+					"resourceAction", ra.Name, "actionIndex", actionIndex)
+			}
 		}
 	}
+}
+
+func (c *CronEngine) forget(key cronKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.jobs, key)
 }
