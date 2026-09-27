@@ -359,11 +359,20 @@ func (e *K8sExecutor) resolveHeaders(
 	return resolved, nil
 }
 
+// alreadyExecuted reports whether the ResourceAction already ran for this
+// resource and event. Create and Delete happen once per resource (UID), so
+// they are deduplicated; this keeps informer re-lists after an operator
+// restart from firing Create actions again for existing resources. Update
+// events are never deduplicated: every real change (e.g. a label transition
+// that happens again) must trigger the action.
 func alreadyExecuted(
 	ra *opsv1alpha1.ResourceAction,
 	uid types.UID,
 	event string,
 ) bool {
+	if event == string(EventUpdate) {
+		return false
+	}
 	for _, exec := range ra.Status.Executions {
 		if exec.ResourceUID == string(uid) && exec.Event == event {
 			return true

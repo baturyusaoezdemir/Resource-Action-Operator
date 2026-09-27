@@ -145,6 +145,11 @@ func (e *Engine) EnsureWatching(ctx context.Context, gvk schema.GroupVersionKind
 			if !ok {
 				return
 			}
+			// Re-lists deliver updates without an actual change; skip them
+			// so Update actions only run for real modifications.
+			if oldU.GetResourceVersion() == newU.GetResourceVersion() {
+				return
+			}
 			e.onEvent(context.Background(), MatchInput{
 				Event:  EventUpdate,
 				GVK:    gvk,

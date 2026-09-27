@@ -293,6 +293,7 @@ If `Node` examples are used:
 
 If logs show `Skipping already executed action`:
 
-- the current `once` implementation deduplicates by resource UID and event
-- reusing the same resource for the same event may not execute the action again
+- `Create` and `Delete` actions are deduplicated by resource UID and event, so they run once per resource
+- this prevents existing resources from re-triggering `Create` actions after an operator restart
 - trigger the scenario on a different object or recreate the `ResourceAction`
+- `Update` actions are not deduplicated and run for every matching change
